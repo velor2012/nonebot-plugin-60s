@@ -16,6 +16,7 @@ from nonebot.typing import T_State
 
 from .config import Config
 
+from .data_utils import get_datas, save_subscribe
 
 try:
     import ujson as json
@@ -35,14 +36,8 @@ __usage__ = """每天60秒读懂世界
 require("nonebot_plugin_apscheduler")
 
 
-subscribe = Path(__file__).parent / "subscribe.json"
-
-subscribe_list = json.loads(subscribe.read_text(
-    "utf-8")) if subscribe.is_file() else {}
-
-
-def save_subscribe():
-    subscribe.write_text(json.dumps(subscribe_list), encoding="utf-8")
+subscribe_list = get_datas()
+logger.debug(f"60s日历订阅列表：{subscribe_list}")
 
 
 # 加载全局配置
@@ -50,7 +45,7 @@ global_config = nonebot.get_driver().config
 calendar = Config.parse_obj(global_config.dict())
 wechat_oa_cookie = calendar.calendar_cookie
 wechat_oa_token = calendar.calendar_token
-
+api_list = calendar.calendar_api_list
 
 driver = get_driver()
 
@@ -98,12 +93,19 @@ async def get_calendar_url(cookie: str, token: str) -> str:
 
 async def get_calendar() -> bytes:
     async with httpx.AsyncClient(http2=True, follow_redirects=True) as client:
-        response = await client.get(
-            "https://api.03c3.cn/zb"
-        )
-        if response.is_error:
-            raise ValueError(f"60s日历获取失败，错误码：{response.status_code}")
-        return response.content
+        ex = None
+        for url in api_list:
+            try:
+                response = await client.get(url)
+                if response.is_error:
+                    raise ValueError(f"60s日历获取失败，错误码：{response.status_code}")
+                logger.debug(f"60s日历获取成功，api地址：{url}")
+                return response.content
+            except Exception as e:
+                ex = e
+                logger.error(f"获取60s日历失败，错误：{e}")
+                continue
+        raise ValueError(f"60s日历获取失败，错误：{ex}")
 
 
 @driver.on_startup
@@ -134,7 +136,7 @@ async def push_calendar(group_id: str):
 
 def calendar_subscribe(group_id: str, hour: str, minute: str) -> None:
     subscribe_list[group_id] = {"hour": hour, "minute": minute}
-    save_subscribe()
+    save_subscribe(subscribe_list)
     scheduler.add_job(
         push_calendar,
         "cron",
@@ -164,23 +166,31 @@ async def moyu(
                     f"\n推送时间: {group_id_info['hour']}:{group_id_info['minute']}"
                 )
             await matcher.finish(moyu_state)
-        elif "设置" in cmdarg or "推送" in cmdarg:
+        elif "设置" in cmdarg or "定时" in cmdarg:
             if ":" in cmdarg or "：" in cmdarg:
                 matcher.set_arg("time_arg", args)
         elif "禁用" in cmdarg or "关闭" in cmdarg:
             del subscribe_list[str(event.group_id)]
-            save_subscribe()
+            save_subscribe(subscribe_list)
             scheduler.remove_job(f"moyu_calendar_{event.group_id}")
             await matcher.finish("60s日历推送已禁用")
+        elif "推送" in cmdarg or cmdarg == '' or cmdarg is None:
+            moyu_img = await tryTogetCalendar(wechat_oa_cookie, wechat_oa_token)
+            await matcher.finish(MessageSegment.image(moyu_img))
         else:
             await matcher.finish("60s日历的参数不正确")
     else:
-        try:
-            moyu_img = await get_calendar()
-        except ValueError:
-            moyu_img = await get_calendar_url(wechat_oa_cookie, wechat_oa_token)
+        moyu_img = await tryTogetCalendar(wechat_oa_cookie, wechat_oa_token)
         await matcher.finish(MessageSegment.image(moyu_img))
 
+async def tryTogetCalendar(wechat_oa_cookie: str, wechat_oa_token: str):
+    moyu_img = None
+    try:
+        moyu_img = await get_calendar()
+    except ValueError:
+        if(wechat_oa_cookie != "" and wechat_oa_token != ""):
+            moyu_img = await get_calendar_url(wechat_oa_cookie, wechat_oa_token)
+    return moyu_img
 
 @moyu_matcher.got("time_arg", prompt="请发送每日定时推送日历的时间，格式为：小时:分钟")
 async def handle_time(
