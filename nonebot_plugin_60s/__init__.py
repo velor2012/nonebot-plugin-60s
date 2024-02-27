@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from nonebot import get_bot, get_driver, logger, on_command, require
 from nonebot.adapters import Message
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment, MessageEvent
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment, MessageEvent, Bot
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg
 from nonebot.typing import T_State
@@ -114,7 +114,7 @@ async def subscribe_jobs():
         scheduler.add_job(
             push_calendar,
             "cron",
-            args=[group_id],
+            args=[group_id, info["botId"]],
             id=f"moyu_calendar_{group_id}",
             replace_existing=True,
             hour=info["hour"],
@@ -122,8 +122,8 @@ async def subscribe_jobs():
         )
 
 
-async def push_calendar(group_id: str):
-    bot = get_bot()
+async def push_calendar(group_id: str, botId: str):
+    bot = get_bot(botId)
     try:
         moyu_img = await get_calendar()
     except ValueError:
@@ -134,13 +134,13 @@ async def push_calendar(group_id: str):
     )
 
 
-def calendar_subscribe(group_id: str, hour: str, minute: str) -> None:
+def calendar_subscribe(group_id: str, botId: str, hour: str, minute: str) -> None:
     subscribe_list[group_id] = {"hour": hour, "minute": minute}
     save_subscribe(subscribe_list)
     scheduler.add_job(
         push_calendar,
         "cron",
-        args=[group_id],
+        args=[group_id, botId],
         id=f"moyu_calendar_{group_id}",
         replace_existing=True,
         hour=hour,
@@ -194,6 +194,7 @@ async def tryTogetCalendar(wechat_oa_cookie: str, wechat_oa_token: str):
 
 @moyu_matcher.got("time_arg", prompt="请发送每日定时推送日历的时间，格式为：小时:分钟")
 async def handle_time(
+    bot: Bot,
     event: GroupMessageEvent, state: T_State, time_arg: Message = Arg()
 ):
     state.setdefault("max_times", 0)
@@ -202,7 +203,7 @@ async def handle_time(
         await moyu_matcher.finish("已退出60s日历推送时间设置")
     match = re.search(r"(\d*)[:：](\d*)", time)
     if match and match[1] and match[2]:
-        calendar_subscribe(str(event.group_id), match[1], match[2])
+        calendar_subscribe(str(event.group_id), bot.self_id, match[1], match[2])
         await moyu_matcher.finish(f"60s日历的每日推送时间已设置为：{match[1]}:{match[2]}")
     else:
         state["max_times"] += 1
